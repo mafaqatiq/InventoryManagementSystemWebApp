@@ -1,16 +1,19 @@
-from fastapi import FastAPI
-from app.database import engine, Base
-import app.models
-from app.routes import router  # ✅ Correct import
+from fastapi import FastAPI, Request
+from database import engine, Base
+import models
+from router import auth, admin, todos, users   
 
 app = FastAPI()
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
 
-# Include API routes
-app.include_router(router)  # ✅ Corrected usage
 
-@app.get("/")
-def read_root():
-    return {"message": "Very Warm Welcome to Inventory Management System!"}
+@app.get('/')
+def home(request: Request):
+    return {"message": "Hello World"}
+
+models.Base.metadata.create_all(bind=engine)   # create a db from models.py and database.py to create todos.db
+
+app.include_router(auth.router)
+app.include_router(todos.router)
+app.include_router(admin.router)
+app.include_router(users.router)
