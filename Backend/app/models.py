@@ -1,7 +1,7 @@
 from sqlalchemy import ForeignKey, create_engine, MetaData
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Boolean
-from database import Base
+from app.database import Base
 
 class Users(Base):
     __tablename__ = 'users'
