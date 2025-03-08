@@ -5,3 +5,24 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - ./:/app
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://postgres:admin@db/EcomAppDatabase
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=EcomAppDatabase
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:

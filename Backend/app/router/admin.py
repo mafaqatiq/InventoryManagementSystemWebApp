@@ -28,9 +28,17 @@ user_dependency =  Annotated[dict, Depends(get_current_user)]
 
 @router.get('/todo', status_code=status.HTTP_200_OK)
 def read_all(user: user_dependency, db: db_dependency):
-    if user is None or user.get('user_role')!= 'admin':
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication Failed')
-    return db.query(Todos).all()
+    # Debug: Print user information
+    print(f"User info: {user}")
+    print(f"User role: {user.get('user_role')}")
+    
+    if user is None or user.get('user_role') != 'admin':
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Authentication Failed. User role: {user.get('user_role')}")
+    
+    # Explicitly query all todos without any filtering
+    todos = db.query(Todos).all()
+    print(f"Number of todos found: {len(todos)}")
+    return todos
 
 @router.delete('/todo/{todoId}', status_code=status.HTTP_204_NO_CONTENT)
 def delete_todo(user: user_dependency, db: db_dependency, todoId: int):
