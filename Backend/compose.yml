@@ -9,20 +9,5 @@ services:
       - ./:/app
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql://postgres:admin@db/EcomAppDatabase
-    depends_on:
-      - db
-
-  db:
-    image: postgres:15
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_PASSWORD=admin
-      - POSTGRES_USER=postgres
-      - POSTGRES_DB=EcomAppDatabase
-    ports:
-      - "5432:5432"
-
-volumes:
-  postgres_data:
+      - DATABASE_URL=postgresql://postgres:admin@host.docker.internal/EcomAppDatabase
+    # No longer depends on db service since we're using the host's PostgreSQL
