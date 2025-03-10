@@ -16,6 +16,7 @@ router = APIRouter(
     tags=['Authentication']
 )
 
+# Database dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -24,11 +25,21 @@ def get_db():
         db.close()
 
 db_dependency = Annotated[Session, Depends(get_db)]
- 
- 
 
+# Security configuration
+SECRET_KEY = 'your-secret-key'
+ALGORITHM = 'HS256'
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-class RequestUsers(BaseModel):
+# Password hashing
+bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+Oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
+
+#######################
+# Pydantic Models
+#######################
+
+class UserRegistration(BaseModel):
     email: str
     username: str
     first_name: str
@@ -41,93 +52,115 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-# AUTHENTICATION
-bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+#######################
+# Helper Functions
+#######################
 
 def authenticate_user(username: str, password: str, db):
+    """Verify user credentials"""
     user_model = db.query(Users).filter(Users.username == username).first()
     if not user_model:
         return False
+    
     if not bcrypt_context.verify(password, user_model.hashed_password):
         return False
+    
     return user_model
 
-
-# Authorization
-SECRET_KEY = 'e971251b73bfb51ad154684ce30e215fe1d60de5f993c7eff1f5468b3aa99c1e'
-ALGORITHM = 'HS256'
-Oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
-
-# AUTHORIZATION (Creating jwt token and also encoding it)
-def create_access_token(username: str, user_id: int, role:str,  expires_delta: timedelta):
+def create_access_token(username: str, user_id: int, role: str, expires_delta: timedelta):
+    """Generate a JWT token for authenticated users"""
     encode = {'sub': username, 'id': user_id, 'role': role}
     expires = datetime.now(timezone.utc) + expires_delta
     encode.update({'exp': expires})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(token: Annotated[str, Depends(Oauth2_bearer)]):
+    """Decode and validate JWT token to get current user"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get('sub')
         user_id: int = payload.get('id')
         user_role: str = payload.get('role')
+        
         if username is None or user_id is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate the user' )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate user')
+        
         return {'username': username, 'id': user_id, 'user_role': user_role}
     except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate the user' )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate user')
 
- 
+#######################
+# Authentication Endpoints
+#######################
 
-
-@router.post('/', status_code=status.HTTP_201_CREATED)
-def create_user(db: db_dependency, request_users: RequestUsers):
-
-    users_model = Users(
-        email=request_users.email,
-        username=request_users.username,
-        first_name=request_users.first_name,
-        last_name=request_users.last_name,
-        hashed_password= bcrypt_context.hash(request_users.password),
-        role=request_users.role,
-        is_active = True,
-        phone_number = request_users.phone_number
+@router.post('/register', status_code=status.HTTP_201_CREATED)
+def register_user(db: db_dependency, user: UserRegistration):
+    """Register a new user"""
+    # Check if username or email already exists
+    existing_user = db.query(Users).filter(
+        (Users.username == user.username) | (Users.email == user.email)
+    ).first()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered"
+        )
+    
+    # Create new user
+    user_model = Users(
+        email=user.email,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        phone_number=user.phone_number,
+        hashed_password=bcrypt_context.hash(user.password),
+        is_active=True
     )
-
-    if not users_model:
-        raise HTTPException(status_code=404, detail="Erro occur on db side")
-    db.add(users_model)
+    
+    db.add(user_model)
     db.commit()
-    return users_model
-
+    
+    return {"message": "User created successfully"}
 
 @router.post('/token', response_model=Token)
 def login_for_access_token(
-    response: Response,  # Add this parameter
+    response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()], 
     db: db_dependency
 ):
-    user_model = authenticate_user(form_data.username, form_data.password, db)
-    if not user_model:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate the user')
-    token = create_access_token(user_model.username, user_model.id, user_model.role, timedelta(minutes=20))
+    """Authenticate user and provide access token"""
+    # Authenticate user
+    user = authenticate_user(form_data.username, form_data.password, db)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
     
-    # Set the JWT token in a cookie
-    response.set_cookie(
-        key="access_token",  # Cookie name
-        value=f"Bearer {token}",  # Cookie value (JWT token)
-        max_age=1200,  # Cookie expiration time in seconds (20 minutes)
-        httponly=True,  # Prevent client-side JavaScript from accessing the cookie
-        secure=True,  # Ensure the cookie is only sent over HTTPS
-        samesite="lax"  # Prevent CSRF attacks
+    # Generate token
+    token = create_access_token(
+        username=user.username,
+        user_id=user.id,
+        role=user.role,
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     
-    return {"access_token": token, "token_type": "bearer"}
-
-
+    # Set token as HTTP-only cookie
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=True,  # Set to True in production with HTTPS
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+    
+    return Token(access_token=token, token_type="bearer")
 
 @router.post('/logout')
 def logout(response: Response):
-    # Delete the JWT token cookie
+    """Log out user by clearing the token cookie"""
     response.delete_cookie(key="access_token")
     return {"message": "Logged out successfully"}

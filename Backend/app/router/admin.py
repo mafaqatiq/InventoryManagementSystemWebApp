@@ -13,7 +13,7 @@ router = APIRouter(
     tags=['admin']
 )
 
-
+# Database dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -25,7 +25,10 @@ def get_db():
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
-# Pydantic models for user management
+#######################
+# Pydantic Models
+#######################
+
 class UserBase(BaseModel):
     email: str
     username: str
@@ -54,42 +57,52 @@ class UserResponse(UserBase):
     class Config:
         orm_mode = True
 
-# Helper function to check admin role
+#######################
+# Helper Functions
+#######################
+
 def check_admin(user):
-    if user is None or user.get('user_role') != 'admin':
+    """Verify that the user has admin privileges"""
+    if not user or user.get('user_role') != 'admin':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"
         )
 
-# User management endpoints
+#######################
+# Admin User Management Endpoints
+#######################
+
 @router.get('/users', response_model=List[UserResponse], status_code=status.HTTP_200_OK)
 def get_all_users(db: db_dependency, user: user_dependency):
+    """Get all users (admin only)"""
     check_admin(user)
     return db.query(Users).all()
 
 @router.get('/users/{user_id}', response_model=UserResponse, status_code=status.HTTP_200_OK)
 def get_user(user_id: int, db: db_dependency, user: user_dependency):
+    """Get a specific user by ID (admin only)"""
     check_admin(user)
     
-    db_user = db.query(Users).filter(Users.id == user_id).first()
-    if not db_user:
+    user_model = db.query(Users).filter(Users.id == user_id).first()
+    if not user_model:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
+            detail=f"User with id {user_id} not found"
         )
     
-    return db_user
+    return user_model
 
 @router.put('/users/{user_id}', response_model=UserResponse, status_code=status.HTTP_200_OK)
 def update_user(user_id: int, user_update: UserUpdate, db: db_dependency, user: user_dependency):
+    """Update a user's information (admin only)"""
     check_admin(user)
     
-    db_user = db.query(Users).filter(Users.id == user_id).first()
-    if not db_user:
+    user_model = db.query(Users).filter(Users.id == user_id).first()
+    if not user_model:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
+            detail=f"User with id {user_id} not found"
         )
     
     # Update only provided fields
@@ -97,71 +110,78 @@ def update_user(user_id: int, user_update: UserUpdate, db: db_dependency, user: 
     
     # Hash password if provided
     if 'password' in update_data:
-        update_data['hashed_password'] = bcrypt_context.hash(update_data.pop('password'))
+        update_data['hashed_password'] = bcrypt_context.hash(update_data['password'])
+        del update_data['password']
     
     for key, value in update_data.items():
-        setattr(db_user, key, value)
+        setattr(user_model, key, value)
     
     db.commit()
-    db.refresh(db_user)
-    return db_user
+    db.refresh(user_model)
+    return user_model
 
 @router.delete('/users/{user_id}', status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(user_id: int, db: db_dependency, user: user_dependency):
+    """Delete a user (admin only)"""
     check_admin(user)
     
-    db_user = db.query(Users).filter(Users.id == user_id).first()
-    if not db_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
-        )
-    
-    # Prevent deleting yourself
-    if db_user.id == user.get('id'):
+    # Prevent admin from deleting themselves
+    if user_id == user.get('id'):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot delete your own account"
+            detail="Cannot delete your own account"
         )
     
-    db.delete(db_user)
+    user_model = db.query(Users).filter(Users.id == user_id).first()
+    if not user_model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    
+    db.delete(user_model)
     db.commit()
     return None
 
 @router.post('/users', response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(user_create: UserCreate, db: db_dependency, user: user_dependency):
+    """Create a new user (admin only)"""
     check_admin(user)
     
-    # Check if email or username already exists
-    existing_email = db.query(Users).filter(Users.email == user_create.email).first()
-    if existing_email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
+    # Check if username or email already exists
+    existing_user = db.query(Users).filter(
+        (Users.username == user_create.username) | (Users.email == user_create.email)
+    ).first()
     
-    existing_username = db.query(Users).filter(Users.username == user_create.username).first()
-    if existing_username:
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already taken"
+            detail="Username or email already registered"
         )
     
     # Create new user
-    user_data = user_create.dict()
-    hashed_password = bcrypt_context.hash(user_data.pop('password'))
-    
-    db_user = Users(
-        **user_data,
-        hashed_password=hashed_password
+    user_model = Users(
+        email=user_create.email,
+        username=user_create.username,
+        first_name=user_create.first_name,
+        last_name=user_create.last_name,
+        role=user_create.role,
+        phone_number=user_create.phone_number,
+        hashed_password=bcrypt_context.hash(user_create.password),
+        is_active=user_create.is_active
     )
     
-    db.add(db_user)
+    db.add(user_model)
     db.commit()
-    db.refresh(db_user)
-    return db_user
+    db.refresh(user_model)
+    return user_model
+
+#######################
+# Admin Debug Endpoints
+#######################
 
 @router.get('/debug/current-user', status_code=status.HTTP_200_OK)
 def get_current_user_info(user: user_dependency):
-    """Debug endpoint to show the current user's information."""
+    """Get information about the currently authenticated user (admin only)"""
+    check_admin(user)
     return user

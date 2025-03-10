@@ -9,6 +9,7 @@ from app.models import Order, OrderItem, CartItem, Product, Stock, StockChangeTy
 import starlette.status as status
 from app.router.auth import get_current_user
 
+# Define routers with clear prefixes and tags
 router = APIRouter(
     prefix='/orders',
     tags=['orders']
@@ -30,15 +31,22 @@ def get_db():
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
-# Helper function to check admin role
+#######################
+# Helper Functions
+#######################
+
 def check_admin(user):
+    """Verify that the user has admin privileges"""
     if user is None or user.get('user_role') != 'admin':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"
         )
 
-# Pydantic models
+#######################
+# Pydantic Models
+#######################
+
 class OrderItemResponse(BaseModel):
     id: int
     product_id: int
@@ -70,134 +78,119 @@ class OrderCreate(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: OrderStatus
 
-# Customer order endpoints
+#######################
+# Customer Order Endpoints
+#######################
+
 @router.post('/', response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(
     user: user_dependency,
     db: db_dependency,
     order_data: OrderCreate
 ):
-    """Create a new order from the user's cart"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
-    # Get all cart items for the user
-    cart_items = db.query(CartItem).filter(CartItem.user_id == user.get('id')).all()
+    """Create a new order from the user's cart items"""
+    # Get user's cart items
+    cart_items = db.query(CartItem).filter(CartItem.user_id == user['id']).all()
     
     if not cart_items:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your cart is empty"
+            detail="Cannot create order with empty cart"
         )
     
-    # Calculate total amount and validate stock
+    # Calculate total amount and check stock
     total_amount = 0
     order_items_data = []
     
     for cart_item in cart_items:
+        # Get product
         product = db.query(Product).filter(Product.id == cart_item.product_id).first()
         
-        # Skip if product no longer exists
         if not product:
-            continue
-        
-        # Check if product is in stock
-        if not product.in_stock or product.stock_left < cart_item.quantity:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Not enough stock for {product.name}. Available: {product.stock_left}"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Product with id {cart_item.product_id} not found"
             )
         
-        # Calculate subtotal
+        # Check if product is in stock
+        if not product.in_stock:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Product '{product.name}' is out of stock"
+            )
+        
+        # Check if enough stock is available
+        if product.stock_left < cart_item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Not enough stock for product '{product.name}'. Available: {product.stock_left}, Requested: {cart_item.quantity}"
+            )
+        
+        # Calculate subtotal for this item
         subtotal = product.price * cart_item.quantity
         total_amount += subtotal
         
         # Prepare order item data
         order_items_data.append({
             "product_id": product.id,
+            "product_name": product.name,
             "quantity": cart_item.quantity,
             "price_at_time": product.price,
-            "product": product
+            "subtotal": subtotal
         })
     
     # Create order
-    db_order = Order(
-        user_id=user.get('id'),
+    new_order = Order(
+        user_id=user['id'],
         status=OrderStatus.PENDING,
         total_amount=total_amount,
         shipping_address=order_data.shipping_address,
         payment_method=order_data.payment_method
     )
     
-    db.add(db_order)
+    db.add(new_order)
     db.commit()
-    db.refresh(db_order)
+    db.refresh(new_order)
     
-    # Create order items and update stock
+    # Create order items
     for item_data in order_items_data:
-        # Create order item
         order_item = OrderItem(
-            order_id=db_order.id,
-            product_id=item_data["product_id"],
-            quantity=item_data["quantity"],
-            price_at_time=item_data["price_at_time"]
+            order_id=new_order.id,
+            **item_data
         )
         db.add(order_item)
         
         # Update product stock
-        product = item_data["product"]
+        product_id = item_data["product_id"]
+        quantity = item_data["quantity"]
         
-        # Create stock movement (sale)
+        # Record stock movement
         stock_movement = Stock(
-            product_id=product.id,
+            product_id=product_id,
             change_type=StockChangeType.SALE,
-            quantity=item_data["quantity"]
+            quantity=quantity
         )
         db.add(stock_movement)
         
         # Update product sales count
-        product.how_much_sold += item_data["quantity"]
+        product = db.query(Product).filter(Product.id == product_id).first()
+        product.how_much_sold += quantity
         
-        # Update in_stock status based on remaining stock
-        current_stock = product.stock_left - item_data["quantity"]
-        product.in_stock = current_stock > 0
-    
-    # Clear the user's cart
-    db.query(CartItem).filter(CartItem.user_id == user.get('id')).delete()
+        # Check if product is now out of stock
+        if product.stock_left - quantity <= 0:
+            product.in_stock = False
     
     db.commit()
     
-    # Fetch the complete order with items for response
-    db_order = db.query(Order).filter(Order.id == db_order.id).first()
+    # Clear the user's cart
+    for cart_item in cart_items:
+        db.delete(cart_item)
     
-    # Prepare response
-    order_items = []
-    for item in db_order.items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
-        product_name = product.name if product else "Unknown Product"
-        
-        order_items.append(OrderItemResponse(
-            id=item.id,
-            product_id=item.product_id,
-            product_name=product_name,
-            quantity=item.quantity,
-            price_at_time=item.price_at_time,
-            subtotal=item.price_at_time * item.quantity
-        ))
+    db.commit()
     
-    return OrderResponse(
-        id=db_order.id,
-        status=db_order.status,
-        total_amount=db_order.total_amount,
-        shipping_address=db_order.shipping_address,
-        payment_method=db_order.payment_method,
-        created_at=db_order.created_at,
-        updated_at=db_order.updated_at,
-        items=order_items
-    )
+    # Refresh order to include items
+    db.refresh(new_order)
+    return new_order
 
 @router.get('/', response_model=List[OrderResponse])
 def get_user_orders(
@@ -206,47 +199,16 @@ def get_user_orders(
     skip: int = 0,
     limit: int = 10
 ):
-    """Get all orders for the current user"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
-    # Get all orders for the user
+    """Get all orders for the current user with pagination"""
     orders = db.query(Order).filter(
-        Order.user_id == user.get('id')
+        Order.user_id == user['id']
     ).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
 @router.get('/{order_id}', response_model=OrderResponse)
 def get_order(
@@ -254,17 +216,10 @@ def get_order(
     user: user_dependency,
     db: db_dependency
 ):
-    """Get a specific order by ID"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
-    # Get the order
+    """Get a specific order by ID for the current user"""
     order = db.query(Order).filter(
         Order.id == order_id,
-        Order.user_id == user.get('id')
+        Order.user_id == user['id']
     ).first()
     
     if not order:
@@ -273,33 +228,15 @@ def get_order(
             detail=f"Order with id {order_id} not found"
         )
     
-    # Prepare response
-    order_items = []
-    for item in order.items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
-        product_name = product.name if product else "Unknown Product"
-        
-        order_items.append(OrderItemResponse(
-            id=item.id,
-            product_id=item.product_id,
-            product_name=product_name,
-            quantity=item.quantity,
-            price_at_time=item.price_at_time,
-            subtotal=item.price_at_time * item.quantity
-        ))
+    # Ensure order items are loaded
+    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return OrderResponse(
-        id=order.id,
-        status=order.status,
-        total_amount=order.total_amount,
-        shipping_address=order.shipping_address,
-        payment_method=order.payment_method,
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        items=order_items
-    )
+    return order
 
-# Admin order endpoints
+#######################
+# Admin Order Endpoints
+#######################
+
 @admin_router.get('/', response_model=List[OrderResponse])
 def get_all_orders(
     user: user_dependency,
@@ -310,12 +247,12 @@ def get_all_orders(
     skip: int = 0,
     limit: int = 10
 ):
-    """Get all orders with optional filtering"""
+    """Get all orders with filtering options (admin only)"""
     check_admin(user)
     
-    # Build query with filters
     query = db.query(Order)
     
+    # Apply filters
     if status:
         query = query.filter(Order.status == status)
     
@@ -325,130 +262,52 @@ def get_all_orders(
     if to_date:
         query = query.filter(Order.created_at <= to_date)
     
-    # Get orders with pagination
+    # Apply pagination
     orders = query.order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
-@admin_router.get('/last-week', response_model=List[OrderResponse])
-def get_last_week_orders(
+@admin_router.get('/recent', response_model=List[OrderResponse])
+def get_recent_orders(
     user: user_dependency,
     db: db_dependency
 ):
-    """Get orders from the last 7 days"""
+    """Get orders from the last week (admin only)"""
     check_admin(user)
     
-    # Calculate date 7 days ago
     one_week_ago = datetime.utcnow() - timedelta(days=7)
-    
-    # Get orders from the last week
     orders = db.query(Order).filter(
         Order.created_at >= one_week_ago
     ).order_by(desc(Order.created_at)).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
-@admin_router.get('/last-month', response_model=List[OrderResponse])
-def get_last_month_orders(
+@admin_router.get('/monthly', response_model=List[OrderResponse])
+def get_monthly_orders(
     user: user_dependency,
     db: db_dependency
 ):
-    """Get orders from the last 30 days"""
+    """Get orders from the last month (admin only)"""
     check_admin(user)
     
-    # Calculate date 30 days ago
     one_month_ago = datetime.utcnow() - timedelta(days=30)
-    
-    # Get orders from the last month
     orders = db.query(Order).filter(
         Order.created_at >= one_month_ago
     ).order_by(desc(Order.created_at)).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
 @admin_router.get('/{order_id}', response_model=OrderResponse)
 def admin_get_order(
@@ -456,10 +315,9 @@ def admin_get_order(
     user: user_dependency,
     db: db_dependency
 ):
-    """Get a specific order by ID (admin access)"""
+    """Get a specific order by ID (admin only)"""
     check_admin(user)
     
-    # Get the order
     order = db.query(Order).filter(Order.id == order_id).first()
     
     if not order:
@@ -468,31 +326,10 @@ def admin_get_order(
             detail=f"Order with id {order_id} not found"
         )
     
-    # Prepare response
-    order_items = []
-    for item in order.items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
-        product_name = product.name if product else "Unknown Product"
-        
-        order_items.append(OrderItemResponse(
-            id=item.id,
-            product_id=item.product_id,
-            product_name=product_name,
-            quantity=item.quantity,
-            price_at_time=item.price_at_time,
-            subtotal=item.price_at_time * item.quantity
-        ))
+    # Ensure order items are loaded
+    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return OrderResponse(
-        id=order.id,
-        status=order.status,
-        total_amount=order.total_amount,
-        shipping_address=order.shipping_address,
-        payment_method=order.payment_method,
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        items=order_items
-    )
+    return order
 
 @admin_router.put('/{order_id}/status', response_model=OrderResponse)
 def update_order_status(
@@ -501,10 +338,9 @@ def update_order_status(
     user: user_dependency,
     db: db_dependency
 ):
-    """Update the status of an order"""
+    """Update the status of an order (admin only)"""
     check_admin(user)
     
-    # Get the order
     order = db.query(Order).filter(Order.id == order_id).first()
     
     if not order:
@@ -516,120 +352,93 @@ def update_order_status(
     # Update status
     order.status = status_update.status
     order.updated_at = datetime.utcnow()
+    
     db.commit()
     db.refresh(order)
     
-    # Prepare response
-    order_items = []
-    for item in order.items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
-        product_name = product.name if product else "Unknown Product"
-        
-        order_items.append(OrderItemResponse(
-            id=item.id,
-            product_id=item.product_id,
-            product_name=product_name,
-            quantity=item.quantity,
-            price_at_time=item.price_at_time,
-            subtotal=item.price_at_time * item.quantity
-        ))
+    # Ensure order items are loaded
+    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return OrderResponse(
-        id=order.id,
-        status=order.status,
-        total_amount=order.total_amount,
-        shipping_address=order.shipping_address,
-        payment_method=order.payment_method,
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        items=order_items
-    )
+    return order
+
+#######################
+# Admin Dashboard Endpoints
+#######################
 
 @admin_router.get('/dashboard/summary', status_code=status.HTTP_200_OK)
 def get_orders_summary(
     user: user_dependency,
     db: db_dependency
 ):
-    """Get summary statistics for orders"""
+    """Get summary statistics about orders for admin dashboard (admin only)"""
     check_admin(user)
     
-    # Calculate dates
-    now = datetime.utcnow()
-    one_day_ago = now - timedelta(days=1)
-    one_week_ago = now - timedelta(days=7)
-    one_month_ago = now - timedelta(days=30)
-    
-    # Get counts
+    # Total orders
     total_orders = db.query(func.count(Order.id)).scalar()
     
-    today_orders = db.query(func.count(Order.id)).filter(
-        Order.created_at >= one_day_ago
-    ).scalar()
+    # Orders by status
+    orders_by_status = db.query(
+        Order.status, 
+        func.count(Order.id)
+    ).group_by(
+        Order.status
+    ).all()
     
-    week_orders = db.query(func.count(Order.id)).filter(
-        Order.created_at >= one_week_ago
-    ).scalar()
+    # Format orders by status
+    status_data = [
+        {"status": status.value, "count": count}
+        for status, count in orders_by_status
+    ]
     
-    month_orders = db.query(func.count(Order.id)).filter(
-        Order.created_at >= one_month_ago
-    ).scalar()
-    
-    # Get revenue
+    # Total revenue
     total_revenue = db.query(func.sum(Order.total_amount)).scalar() or 0
     
-    today_revenue = db.query(func.sum(Order.total_amount)).filter(
-        Order.created_at >= one_day_ago
-    ).scalar() or 0
+    # Recent orders (last 7 days)
+    one_week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_orders_count = db.query(func.count(Order.id)).filter(
+        Order.created_at >= one_week_ago
+    ).scalar()
     
-    week_revenue = db.query(func.sum(Order.total_amount)).filter(
+    # Recent revenue (last 7 days)
+    recent_revenue = db.query(func.sum(Order.total_amount)).filter(
         Order.created_at >= one_week_ago
     ).scalar() or 0
     
-    month_revenue = db.query(func.sum(Order.total_amount)).filter(
+    # Monthly orders (last 30 days)
+    one_month_ago = datetime.utcnow() - timedelta(days=30)
+    monthly_orders_count = db.query(func.count(Order.id)).filter(
+        Order.created_at >= one_month_ago
+    ).scalar()
+    
+    # Monthly revenue (last 30 days)
+    monthly_revenue = db.query(func.sum(Order.total_amount)).filter(
         Order.created_at >= one_month_ago
     ).scalar() or 0
     
-    # Get status counts
-    pending_orders = db.query(func.count(Order.id)).filter(
-        Order.status == OrderStatus.PENDING
-    ).scalar()
+    # Latest orders (top 5)
+    latest_orders = db.query(Order).order_by(
+        desc(Order.created_at)
+    ).limit(5).all()
     
-    processing_orders = db.query(func.count(Order.id)).filter(
-        Order.status == OrderStatus.PROCESSING
-    ).scalar()
-    
-    shipped_orders = db.query(func.count(Order.id)).filter(
-        Order.status == OrderStatus.SHIPPED
-    ).scalar()
-    
-    delivered_orders = db.query(func.count(Order.id)).filter(
-        Order.status == OrderStatus.DELIVERED
-    ).scalar()
-    
-    cancelled_orders = db.query(func.count(Order.id)).filter(
-        Order.status == OrderStatus.CANCELLED
-    ).scalar()
+    latest_orders_data = [
+        {
+            "id": order.id,
+            "status": order.status.value,
+            "total_amount": order.total_amount,
+            "created_at": order.created_at
+        }
+        for order in latest_orders
+    ]
     
     return {
-        "orders": {
-            "total": total_orders,
-            "today": today_orders,
-            "week": week_orders,
-            "month": month_orders
-        },
-        "revenue": {
-            "total": float(total_revenue),
-            "today": float(today_revenue),
-            "week": float(week_revenue),
-            "month": float(month_revenue)
-        },
-        "status": {
-            "pending": pending_orders,
-            "processing": processing_orders,
-            "shipped": shipped_orders,
-            "delivered": delivered_orders,
-            "cancelled": cancelled_orders
-        }
+        "total_orders": total_orders,
+        "orders_by_status": status_data,
+        "total_revenue": total_revenue,
+        "recent_orders_count": recent_orders_count,
+        "recent_revenue": recent_revenue,
+        "monthly_orders_count": monthly_orders_count,
+        "monthly_revenue": monthly_revenue,
+        "latest_orders": latest_orders_data
     }
 
 @admin_router.get('/dashboard/all', response_model=List[OrderResponse])
@@ -639,41 +448,18 @@ def get_all_orders_for_dashboard(
     skip: int = 0,
     limit: int = 100
 ):
-    """Get all orders without filtering for admin dashboard"""
+    """Get all orders for admin dashboard (admin only)"""
     check_admin(user)
     
-    # Get all orders with pagination
-    orders = db.query(Order).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
+    orders = db.query(Order).order_by(
+        desc(Order.created_at)
+    ).offset(skip).limit(limit).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
 @admin_router.get('/dashboard/by-status/{status}', response_model=List[OrderResponse])
 def get_orders_by_status_for_dashboard(
@@ -683,43 +469,20 @@ def get_orders_by_status_for_dashboard(
     skip: int = 0,
     limit: int = 100
 ):
-    """Get orders filtered by status for admin dashboard"""
+    """Get orders filtered by status for admin dashboard (admin only)"""
     check_admin(user)
     
-    # Get orders with the specified status
     orders = db.query(Order).filter(
         Order.status == status
-    ).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
+    ).order_by(
+        desc(Order.created_at)
+    ).offset(skip).limit(limit).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response
+    return orders
 
 @admin_router.get('/dashboard/recent', response_model=List[OrderResponse])
 def get_recent_orders_for_dashboard(
@@ -728,43 +491,18 @@ def get_recent_orders_for_dashboard(
     days: int = 3,
     limit: int = 10
 ):
-    """Get recent orders for admin dashboard"""
+    """Get recent orders for admin dashboard (admin only)"""
     check_admin(user)
     
-    # Calculate date for recent orders
     recent_date = datetime.utcnow() - timedelta(days=days)
-    
-    # Get recent orders
     orders = db.query(Order).filter(
         Order.created_at >= recent_date
-    ).order_by(desc(Order.created_at)).limit(limit).all()
+    ).order_by(
+        desc(Order.created_at)
+    ).limit(limit).all()
     
-    # Prepare response
-    response = []
+    # Ensure order items are loaded
     for order in orders:
-        order_items = []
-        for item in order.items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            product_name = product.name if product else "Unknown Product"
-            
-            order_items.append(OrderItemResponse(
-                id=item.id,
-                product_id=item.product_id,
-                product_name=product_name,
-                quantity=item.quantity,
-                price_at_time=item.price_at_time,
-                subtotal=item.price_at_time * item.quantity
-            ))
-        
-        response.append(OrderResponse(
-            id=order.id,
-            status=order.status,
-            total_amount=order.total_amount,
-            shipping_address=order.shipping_address,
-            payment_method=order.payment_method,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-            items=order_items
-        ))
+        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     
-    return response 
+    return orders 

@@ -25,7 +25,10 @@ def get_db():
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
-# Pydantic models
+#######################
+# Pydantic Models
+#######################
+
 class CartItemCreate(BaseModel):
     product_id: int
     quantity: int = 1
@@ -50,7 +53,10 @@ class CartSummaryResponse(BaseModel):
     total_items: int
     total_amount: float
 
-# Cart endpoints
+#######################
+# Cart Endpoints
+#######################
+
 @router.post('/', response_model=CartItemResponse, status_code=status.HTTP_201_CREATED)
 def add_to_cart(
     user: user_dependency,
@@ -58,13 +64,7 @@ def add_to_cart(
     cart_item: CartItemCreate
 ):
     """Add a product to the user's cart"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
-    # Check if product exists and is in stock
+    # Check if product exists
     product = db.query(Product).filter(Product.id == cart_item.product_id).first()
     if not product:
         raise HTTPException(
@@ -72,92 +72,42 @@ def add_to_cart(
             detail=f"Product with id {cart_item.product_id} not found"
         )
     
-    if not product.in_stock or product.stock_left < cart_item.quantity:
+    # Check if product is in stock
+    if not product.in_stock:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Not enough stock available. Available: {product.stock_left}"
+            detail=f"Product '{product.name}' is out of stock"
+        )
+    
+    # Check if there's enough stock
+    if product.stock_left < cart_item.quantity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not enough stock for product '{product.name}'. Available: {product.stock_left}, Requested: {cart_item.quantity}"
         )
     
     # Check if product is already in cart
     existing_item = db.query(CartItem).filter(
-        CartItem.user_id == user.get('id'),
+        CartItem.user_id == user['id'],
         CartItem.product_id == cart_item.product_id
     ).first()
     
     if existing_item:
-        # Update quantity if already in cart
+        # Update quantity
         new_quantity = existing_item.quantity + cart_item.quantity
         
         # Check if new quantity exceeds available stock
         if new_quantity > product.stock_left:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Not enough stock available. Available: {product.stock_left}"
+                detail=f"Cannot add {cart_item.quantity} more units of '{product.name}'. Total would exceed available stock of {product.stock_left}"
             )
         
         existing_item.quantity = new_quantity
         db.commit()
         db.refresh(existing_item)
-        db_cart_item = existing_item
-    else:
-        # Add new item to cart
-        db_cart_item = CartItem(
-            user_id=user.get('id'),
-            product_id=cart_item.product_id,
-            quantity=cart_item.quantity
-        )
-        db.add(db_cart_item)
-        db.commit()
-        db.refresh(db_cart_item)
-    
-    # Get primary image URL if available
-    primary_image = None
-    if product.images:
-        for image in product.images:
-            if image.is_primary:
-                primary_image = image.image_url
-                break
-        if primary_image is None and product.images:
-            primary_image = product.images[0].image_url
-    
-    # Create response
-    return CartItemResponse(
-        id=db_cart_item.id,
-        product_id=product.id,
-        quantity=db_cart_item.quantity,
-        product_name=product.name,
-        product_price=product.price,
-        product_image=primary_image,
-        subtotal=product.price * db_cart_item.quantity
-    )
-
-@router.get('/', response_model=CartSummaryResponse)
-def get_cart(
-    user: user_dependency,
-    db: db_dependency
-):
-    """Get the user's cart with all items"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
-    # Get all cart items for the user
-    cart_items = db.query(CartItem).filter(CartItem.user_id == user.get('id')).all()
-    
-    # Prepare response items
-    response_items = []
-    total_amount = 0
-    
-    for item in cart_items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
         
-        # Skip if product no longer exists
-        if not product:
-            continue
-        
-        # Get primary image URL if available
+        # Get primary image if available
         primary_image = None
         if product.images:
             for image in product.images:
@@ -167,13 +117,88 @@ def get_cart(
             if primary_image is None and product.images:
                 primary_image = product.images[0].image_url
         
-        subtotal = product.price * item.quantity
+        return CartItemResponse(
+            id=existing_item.id,
+            product_id=product.id,
+            quantity=existing_item.quantity,
+            product_name=product.name,
+            product_price=product.price,
+            product_image=primary_image,
+            subtotal=product.price * existing_item.quantity
+        )
+    else:
+        # Create new cart item
+        db_cart_item = CartItem(
+            user_id=user['id'],
+            product_id=cart_item.product_id,
+            quantity=cart_item.quantity
+        )
+        
+        db.add(db_cart_item)
+        db.commit()
+        db.refresh(db_cart_item)
+        
+        # Get primary image if available
+        primary_image = None
+        if product.images:
+            for image in product.images:
+                if image.is_primary:
+                    primary_image = image.image_url
+                    break
+            if primary_image is None and product.images:
+                primary_image = product.images[0].image_url
+        
+        return CartItemResponse(
+            id=db_cart_item.id,
+            product_id=product.id,
+            quantity=db_cart_item.quantity,
+            product_name=product.name,
+            product_price=product.price,
+            product_image=primary_image,
+            subtotal=product.price * db_cart_item.quantity
+        )
+
+@router.get('/', response_model=CartSummaryResponse)
+def get_cart(
+    user: user_dependency,
+    db: db_dependency
+):
+    """Get the current user's cart with all items"""
+    # Get all cart items for the user
+    cart_items = db.query(CartItem).filter(CartItem.user_id == user['id']).all()
+    
+    # Prepare response
+    response_items = []
+    total_amount = 0
+    total_items = 0
+    
+    for cart_item in cart_items:
+        # Get product
+        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+        
+        if not product:
+            # Skip if product no longer exists
+            continue
+        
+        # Get primary image if available
+        primary_image = None
+        if product.images:
+            for image in product.images:
+                if image.is_primary:
+                    primary_image = image.image_url
+                    break
+            if primary_image is None and product.images:
+                primary_image = product.images[0].image_url
+        
+        # Calculate subtotal
+        subtotal = product.price * cart_item.quantity
         total_amount += subtotal
+        total_items += cart_item.quantity
         
         response_items.append(CartItemResponse(
-            id=item.id,
+            id=cart_item.id,
             product_id=product.id,
-            quantity=item.quantity,
+            quantity=cart_item.quantity,
             product_name=product.name,
             product_price=product.price,
             product_image=primary_image,
@@ -182,7 +207,7 @@ def get_cart(
     
     return CartSummaryResponse(
         items=response_items,
-        total_items=len(response_items),
+        total_items=total_items,
         total_amount=total_amount
     )
 
@@ -193,17 +218,11 @@ def update_cart_item(
     user: user_dependency,
     db: db_dependency
 ):
-    """Update the quantity of a cart item"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
+    """Update the quantity of an item in the cart"""
     # Get cart item
     cart_item = db.query(CartItem).filter(
         CartItem.id == item_id,
-        CartItem.user_id == user.get('id')
+        CartItem.user_id == user['id']
     ).first()
     
     if not cart_item:
@@ -212,18 +231,27 @@ def update_cart_item(
             detail=f"Cart item with id {item_id} not found"
         )
     
-    # Check if product exists and has enough stock
+    # Get product
     product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+    
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Product no longer exists"
+            detail=f"Product with id {cart_item.product_id} not found"
         )
     
-    if update.quantity > product.stock_left:
+    # Check if product is in stock
+    if not product.in_stock:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Not enough stock available. Available: {product.stock_left}"
+            detail=f"Product '{product.name}' is out of stock"
+        )
+    
+    # Check if there's enough stock
+    if product.stock_left < update.quantity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not enough stock for product '{product.name}'. Available: {product.stock_left}, Requested: {update.quantity}"
         )
     
     # Update quantity
@@ -231,7 +259,7 @@ def update_cart_item(
     db.commit()
     db.refresh(cart_item)
     
-    # Get primary image URL if available
+    # Get primary image if available
     primary_image = None
     if product.images:
         for image in product.images:
@@ -241,7 +269,6 @@ def update_cart_item(
         if primary_image is None and product.images:
             primary_image = product.images[0].image_url
     
-    # Create response
     return CartItemResponse(
         id=cart_item.id,
         product_id=product.id,
@@ -259,16 +286,10 @@ def remove_from_cart(
     db: db_dependency
 ):
     """Remove an item from the cart"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
     # Get cart item
     cart_item = db.query(CartItem).filter(
         CartItem.id == item_id,
-        CartItem.user_id == user.get('id')
+        CartItem.user_id == user['id']
     ).first()
     
     if not cart_item:
@@ -277,7 +298,7 @@ def remove_from_cart(
             detail=f"Cart item with id {item_id} not found"
         )
     
-    # Delete the item
+    # Delete cart item
     db.delete(cart_item)
     db.commit()
     
@@ -288,15 +309,9 @@ def clear_cart(
     user: user_dependency,
     db: db_dependency
 ):
-    """Clear all items from the cart"""
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    
+    """Remove all items from the cart"""
     # Delete all cart items for the user
-    db.query(CartItem).filter(CartItem.user_id == user.get('id')).delete()
+    db.query(CartItem).filter(CartItem.user_id == user['id']).delete()
     db.commit()
     
     return None 

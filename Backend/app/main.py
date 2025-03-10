@@ -7,23 +7,32 @@ from app.router import auth, admin, users, products, cart, orders
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="E-commerce API",
-    description="API for E-commerce Dashboard and Customer App",
+    title="Inventory Management System API",
+    description="API for Inventory Management System Dashboard and Customer App",
     version="1.0.0"
 )
 
 @app.get('/')
 def home(request: Request):
-    return {"message": "Welcome to the E-commerce API"}
- 
+    return {
+        "message": "Welcome to the Inventory Management System API",
+        "documentation": "/docs",
+        "redoc": "/redoc"
+    }
 
-# Include routers
+# Include authentication routers
 app.include_router(auth.router)
-app.include_router(admin.router)
+
+# Include user routers
 app.include_router(users.router)
+app.include_router(admin.router)
+
+# Include product routers
 app.include_router(products.router)
 app.include_router(products.admin_router)
 app.include_router(products.stock_router)
+
+# Include cart and order routers
 app.include_router(cart.router)
 app.include_router(orders.router)
 app.include_router(orders.admin_router)
