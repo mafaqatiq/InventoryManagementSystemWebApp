@@ -19,7 +19,7 @@ class Users(Base):
     is_active = Column(Boolean, default=True)
     role = Column(String, default="user")   
     phone_number = Column(String, nullable=True)
-    
+
     # Relationships
     reviews = relationship("Review", back_populates="user")
     cart_items = relationship("CartItem", back_populates="user", cascade="all, delete-orphan")

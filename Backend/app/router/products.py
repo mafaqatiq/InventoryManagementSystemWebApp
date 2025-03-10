@@ -307,258 +307,6 @@ def delete_product(user: user_dependency, db: db_dependency, product_id: int):
     return None
 
 @admin_router.get('/', response_model=List[ProductResponse])
-def get_all_products_admin(
-    user: user_dependency, 
-    db: db_dependency,
-    category_id: Optional[int] = None,
-    min_price: Optional[float] = None,
-    max_price: Optional[float] = None,
-    size: Optional[Size] = None,
-    gender: Optional[Gender] = None,
-    in_stock: Optional[bool] = None,
-    sort_by: SortOptions = SortOptions.NEWEST,
-    skip: int = 0,
-    limit: int = 12
-):
-    check_admin(user)
-    
-    query = db.query(Product)
-    
-    # Apply filters
-    query = apply_filters(
-        query, category_id, min_price, max_price, size, gender, in_stock
-    )
-    
-    # Apply sorting
-    query = apply_sorting(query, sort_by)
-    
-    # Apply pagination
-    total = query.count()
-    products = apply_pagination(query, skip, limit).all()
-    
-    return products
-
-@admin_router.get('/last-week', response_model=List[ProductResponse])
-def get_last_week_products(user: user_dependency, db: db_dependency):
-    check_admin(user)
-    
-    one_week_ago = datetime.utcnow() - timedelta(days=7)
-    products = db.query(Product).filter(Product.created_at >= one_week_ago).all()
-    
-    return products
-
-@admin_router.get('/last-month', response_model=List[ProductResponse])
-def get_last_month_products(user: user_dependency, db: db_dependency):
-    check_admin(user)
-    
-    one_month_ago = datetime.utcnow() - timedelta(days=30)
-    products = db.query(Product).filter(Product.created_at >= one_month_ago).all()
-    
-    return products
-
-# Stock management endpoints
-@stock_router.get('/', response_model=List[StockResponse])
-def get_stock_history(
-    user: user_dependency, 
-    db: db_dependency,
-    product_id: Optional[int] = None,
-    change_type: Optional[StockChangeType] = None,
-    from_date: Optional[datetime] = None,
-    to_date: Optional[datetime] = None,
-    skip: int = 0,
-    limit: int = 100
-):
-    check_admin(user)
-    
-    query = db.query(Stock)
-    
-    if product_id:
-        query = query.filter(Stock.product_id == product_id)
-    if change_type:
-        query = query.filter(Stock.change_type == change_type)
-    if from_date:
-        query = query.filter(Stock.date >= from_date)
-    if to_date:
-        query = query.filter(Stock.date <= to_date)
-    
-    return query.order_by(desc(Stock.date)).offset(skip).limit(limit).all()
-
-@stock_router.put('/{product_id}', response_model=StockResponse)
-def update_stock(
-    user: user_dependency, 
-    db: db_dependency, 
-    product_id: int, 
-    stock_update: StockCreate
-):
-    check_admin(user)
-    
-    # Check if product exists
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Product with id {product_id} not found"
-        )
-    
-    # Create stock movement
-    stock_movement = Stock(
-        product_id=product_id,
-        change_type=stock_update.change_type,
-        quantity=stock_update.quantity
-    )
-    
-    db.add(stock_movement)
-    
-    # Update product in_stock status based on calculated stock
-    current_stock = product.stock_left
-    if stock_update.change_type == StockChangeType.RESTOCK or stock_update.change_type == StockChangeType.RETURN:
-        current_stock += stock_update.quantity
-    elif stock_update.change_type == StockChangeType.SALE:
-        current_stock -= stock_update.quantity
-        # Update how_much_sold if it's a sale
-        product.how_much_sold += stock_update.quantity
-    
-    # Update in_stock status
-    product.in_stock = current_stock > 0
-    
-    db.commit()
-    db.refresh(stock_movement)
-    return stock_movement
-
-# Enhanced Product Image endpoints
-@admin_router.get('/{product_id}/images', response_model=List[ProductImageResponse])
-def get_product_images(
-    user: user_dependency, 
-    db: db_dependency, 
-    product_id: int
-):
-    """Get all images for a specific product"""
-    check_admin(user)
-    
-    # Check if product exists
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Product with id {product_id} not found"
-        )
-    
-    images = db.query(ProductImage).filter(ProductImage.product_id == product_id).all()
-    return images
-
-@admin_router.post('/{product_id}/images', response_model=ProductImageResponse)
-def add_product_image(
-    user: user_dependency, 
-    db: db_dependency, 
-    product_id: int, 
-    image: ProductImageCreate
-):
-    """Add an image to a product"""
-    check_admin(user)
-    
-    # Check if product exists
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Product with id {product_id} not found"
-        )
-    
-    # If this is marked as primary, unset any existing primary images
-    if image.is_primary:
-        existing_primary = db.query(ProductImage).filter(
-            ProductImage.product_id == product_id,
-            ProductImage.is_primary == True
-        ).all()
-        for img in existing_primary:
-            img.is_primary = False
-    
-    db_image = ProductImage(product_id=product_id, **image.dict())
-    db.add(db_image)
-    db.commit()
-    db.refresh(db_image)
-    return db_image
-
-@admin_router.delete('/{product_id}/images/{image_id}', status_code=status.HTTP_204_NO_CONTENT)
-def delete_product_image(
-    user: user_dependency,
-    db: db_dependency,
-    product_id: int,
-    image_id: int
-):
-    """Delete a product image"""
-    check_admin(user)
-    
-    # Check if image exists and belongs to the product
-    image = db.query(ProductImage).filter(
-        ProductImage.id == image_id,
-        ProductImage.product_id == product_id
-    ).first()
-    
-    if not image:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Image with id {image_id} not found for product {product_id}"
-        )
-    
-    db.delete(image)
-    db.commit()
-    return None
-
-@admin_router.put('/{product_id}/images/{image_id}/set-primary', response_model=ProductImageResponse)
-def set_primary_image(
-    user: user_dependency,
-    db: db_dependency,
-    product_id: int,
-    image_id: int
-):
-    """Set an image as the primary image for a product"""
-    check_admin(user)
-    
-    # Check if image exists and belongs to the product
-    image = db.query(ProductImage).filter(
-        ProductImage.id == image_id,
-        ProductImage.product_id == product_id
-    ).first()
-    
-    if not image:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Image with id {image_id} not found for product {product_id}"
-        )
-    
-    # Unset any existing primary images
-    existing_primary = db.query(ProductImage).filter(
-        ProductImage.product_id == product_id,
-        ProductImage.is_primary == True
-    ).all()
-    
-    for img in existing_primary:
-        img.is_primary = False
-    
-    # Set the selected image as primary
-    image.is_primary = True
-    
-    db.commit()
-    db.refresh(image)
-    return image
-
-# Customer Product endpoints
-@router.get('/all', response_model=List[ProductResponse])
-def get_all_products_simple(
-    db: db_dependency,
-    page: int = Query(1, ge=1),
-    limit: int = Query(12, ge=1, le=100)
-):
-    """Get all products without any filtering, just pagination"""
-    skip = (page - 1) * limit
-    
-    query = db.query(Product).filter(Product.in_stock == True)
-    products = query.order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
-    
-    return products
-
-@router.get('/', response_model=List[ProductResponse])
 def get_products(
     db: db_dependency,
     category_id: Optional[int] = None,
@@ -590,7 +338,8 @@ def get_products(
     # Apply pagination
     products = apply_pagination(query, skip, limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @router.get('/{product_id}', response_model=ProductDetailResponse)
 def get_product(
@@ -625,7 +374,8 @@ def get_this_week_products(
     total = query.count()
     products = query.order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @router.get('/this-month', response_model=List[ProductResponse])
 def get_this_month_products(
@@ -645,7 +395,8 @@ def get_this_month_products(
     total = query.count()
     products = query.order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 # Review endpoints
 @router.post('/{product_id}/reviews/', response_model=ReviewResponse, status_code=status.HTTP_201_CREATED)
@@ -728,7 +479,9 @@ def get_all_products_for_dashboard(
     check_admin(user)
     
     products = db.query(Product).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
-    return products
+    
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @admin_router.get('/dashboard/by-category/{category_id}', response_model=List[ProductResponse])
 def get_products_by_category(
@@ -753,7 +506,8 @@ def get_products_by_category(
         Product.category_id == category_id
     ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @admin_router.get('/dashboard/in-stock', response_model=List[ProductResponse])
 def get_in_stock_products(
@@ -769,7 +523,8 @@ def get_in_stock_products(
         Product.in_stock == True
     ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @admin_router.get('/dashboard/out-of-stock', response_model=List[ProductResponse])
 def get_out_of_stock_products(
@@ -785,7 +540,8 @@ def get_out_of_stock_products(
         Product.in_stock == False
     ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @admin_router.get('/dashboard/best-selling', response_model=List[ProductResponse])
 def get_best_selling_products(
@@ -801,7 +557,8 @@ def get_best_selling_products(
         desc(Product.how_much_sold)
     ).offset(skip).limit(limit).all()
     
-    return products
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
 
 @admin_router.get('/dashboard/low-stock', response_model=List[ProductResponse])
 def get_low_stock_products(
@@ -887,4 +644,108 @@ def get_products_summary(
         },
         "categories": category_stats,
         "total_sales": total_sales
-    } 
+    }
+
+# Helper function to enhance products with reviews
+def enhance_products_with_reviews(products, db):
+    """Add reviews and average rating to products"""
+    enhanced_products = []
+    for product in products:
+        # Get reviews for this product
+        reviews = db.query(Review).filter(Review.product_id == product.id).all()
+        
+        # Calculate average rating
+        avg_rating = None
+        if reviews:
+            avg_rating = sum(review.rating for review in reviews) / len(reviews)
+        
+        # Create a copy of the product with reviews and average rating
+        product_dict = {
+            "id": product.id,
+            "name": product.name,
+            "category_id": product.category_id,
+            "brand": product.brand,
+            "weight": product.weight,
+            "gender": product.gender,
+            "size": product.size,
+            "description": product.description,
+            "price": product.price,
+            "in_stock": product.in_stock,
+            "how_much_sold": product.how_much_sold,
+            "created_at": product.created_at,
+            "updated_at": product.updated_at,
+            "reviews": reviews,
+            "average_rating": avg_rating
+        }
+        enhanced_products.append(product_dict)
+    
+    return enhanced_products
+
+@router.get('/all', response_model=List[ProductResponse])
+def get_all_products_simple(
+    db: db_dependency,
+    page: int = Query(1, ge=1),
+    limit: int = Query(12, ge=1, le=100),
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Make authentication optional
+):
+    """Get all products without any filtering, just pagination"""
+    skip = (page - 1) * limit
+    
+    query = db.query(Product).filter(Product.in_stock == True)
+    products = query.order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
+
+@admin_router.get('/', response_model=List[ProductResponse])
+def get_all_products_admin(
+    user: user_dependency, 
+    db: db_dependency,
+    category_id: Optional[int] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    size: Optional[Size] = None,
+    gender: Optional[Gender] = None,
+    in_stock: Optional[bool] = None,
+    sort_by: SortOptions = SortOptions.NEWEST,
+    skip: int = 0,
+    limit: int = 12
+):
+    check_admin(user)
+    
+    query = db.query(Product)
+    
+    # Apply filters
+    query = apply_filters(
+        query, category_id, min_price, max_price, size, gender, in_stock
+    )
+    
+    # Apply sorting
+    query = apply_sorting(query, sort_by)
+    
+    # Apply pagination
+    total = query.count()
+    products = apply_pagination(query, skip, limit).all()
+    
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
+
+@admin_router.get('/last-week', response_model=List[ProductResponse])
+def get_last_week_products(user: user_dependency, db: db_dependency):
+    check_admin(user)
+    
+    one_week_ago = datetime.utcnow() - timedelta(days=7)
+    products = db.query(Product).filter(Product.created_at >= one_week_ago).all()
+    
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db)
+
+@admin_router.get('/last-month', response_model=List[ProductResponse])
+def get_last_month_products(user: user_dependency, db: db_dependency):
+    check_admin(user)
+    
+    one_month_ago = datetime.utcnow() - timedelta(days=30)
+    products = db.query(Product).filter(Product.created_at >= one_month_ago).all()
+    
+    # Enhance products with reviews and average rating
+    return enhance_products_with_reviews(products, db) 
