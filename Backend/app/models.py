@@ -5,6 +5,8 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
 from datetime import datetime
+from typing import Optional
+from fastapi import Query
 
 class Users(Base):
     __tablename__ = 'users'

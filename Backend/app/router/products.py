@@ -131,6 +131,8 @@ class ProductResponse(ProductBase):
     how_much_sold: int
     created_at: datetime
     updated_at: datetime
+    reviews: List[ReviewResponse] = []
+    average_rating: Optional[float] = None
     
     class Config:
         orm_mode = True
@@ -138,7 +140,6 @@ class ProductResponse(ProductBase):
 class ProductDetailResponse(ProductResponse):
     category: CategoryResponse
     images: List[ProductImageResponse]
-    reviews: List[ReviewResponse]
     stock_left: int
     
     class Config:
@@ -543,10 +544,23 @@ def set_primary_image(
     return image
 
 # Customer Product endpoints
+@router.get('/all', response_model=List[ProductResponse])
+def get_all_products_simple(
+    db: db_dependency,
+    page: int = Query(1, ge=1),
+    limit: int = Query(12, ge=1, le=100)
+):
+    """Get all products without any filtering, just pagination"""
+    skip = (page - 1) * limit
+    
+    query = db.query(Product).filter(Product.in_stock == True)
+    products = query.order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    
+    return products
+
 @router.get('/', response_model=List[ProductResponse])
 def get_products(
     db: db_dependency,
-    user: Optional[user_dependency] = None,  # Optional authentication
     category_id: Optional[int] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
@@ -555,7 +569,8 @@ def get_products(
     in_stock: Optional[bool] = True,  # Default to showing only in-stock items
     sort_by: SortOptions = SortOptions.NEWEST,
     page: int = Query(1, ge=1),
-    limit: int = Query(12, ge=1, le=100)
+    limit: int = Query(12, ge=1, le=100),
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Renamed to avoid confusion
 ):
     skip = (page - 1) * limit
     
@@ -581,7 +596,7 @@ def get_products(
 def get_product(
     db: db_dependency,
     product_id: int = Path(..., ge=1),
-    user: Optional[user_dependency] = None  # Optional authentication
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Renamed to avoid confusion
 ):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
@@ -595,9 +610,9 @@ def get_product(
 @router.get('/this-week', response_model=List[ProductResponse])
 def get_this_week_products(
     db: db_dependency,
-    user: Optional[user_dependency] = None,  # Optional authentication
     page: int = Query(1, ge=1),
-    limit: int = Query(12, ge=1, le=100)
+    limit: int = Query(12, ge=1, le=100),
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Renamed to avoid confusion
 ):
     skip = (page - 1) * limit
     
@@ -615,9 +630,9 @@ def get_this_week_products(
 @router.get('/this-month', response_model=List[ProductResponse])
 def get_this_month_products(
     db: db_dependency,
-    user: Optional[user_dependency] = None,  # Optional authentication
     page: int = Query(1, ge=1),
-    limit: int = Query(12, ge=1, le=100)
+    limit: int = Query(12, ge=1, le=100),
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Renamed to avoid confusion
 ):
     skip = (page - 1) * limit
     
@@ -683,7 +698,7 @@ def get_product_reviews(
     product_id: int,
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
-    user: Optional[user_dependency] = None  # Optional authentication
+    current_user: Optional[user_dependency] = Depends(get_current_user)  # Renamed to avoid confusion
 ):
     skip = (page - 1) * limit
     

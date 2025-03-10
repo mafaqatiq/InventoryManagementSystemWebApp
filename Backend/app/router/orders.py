@@ -630,4 +630,141 @@ def get_orders_summary(
             "delivered": delivered_orders,
             "cancelled": cancelled_orders
         }
-    } 
+    }
+
+@admin_router.get('/dashboard/all', response_model=List[OrderResponse])
+def get_all_orders_for_dashboard(
+    user: user_dependency,
+    db: db_dependency,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all orders without filtering for admin dashboard"""
+    check_admin(user)
+    
+    # Get all orders with pagination
+    orders = db.query(Order).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
+    
+    # Prepare response
+    response = []
+    for order in orders:
+        order_items = []
+        for item in order.items:
+            product = db.query(Product).filter(Product.id == item.product_id).first()
+            product_name = product.name if product else "Unknown Product"
+            
+            order_items.append(OrderItemResponse(
+                id=item.id,
+                product_id=item.product_id,
+                product_name=product_name,
+                quantity=item.quantity,
+                price_at_time=item.price_at_time,
+                subtotal=item.price_at_time * item.quantity
+            ))
+        
+        response.append(OrderResponse(
+            id=order.id,
+            status=order.status,
+            total_amount=order.total_amount,
+            shipping_address=order.shipping_address,
+            payment_method=order.payment_method,
+            created_at=order.created_at,
+            updated_at=order.updated_at,
+            items=order_items
+        ))
+    
+    return response
+
+@admin_router.get('/dashboard/by-status/{status}', response_model=List[OrderResponse])
+def get_orders_by_status_for_dashboard(
+    user: user_dependency,
+    db: db_dependency,
+    status: OrderStatus,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get orders filtered by status for admin dashboard"""
+    check_admin(user)
+    
+    # Get orders with the specified status
+    orders = db.query(Order).filter(
+        Order.status == status
+    ).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
+    
+    # Prepare response
+    response = []
+    for order in orders:
+        order_items = []
+        for item in order.items:
+            product = db.query(Product).filter(Product.id == item.product_id).first()
+            product_name = product.name if product else "Unknown Product"
+            
+            order_items.append(OrderItemResponse(
+                id=item.id,
+                product_id=item.product_id,
+                product_name=product_name,
+                quantity=item.quantity,
+                price_at_time=item.price_at_time,
+                subtotal=item.price_at_time * item.quantity
+            ))
+        
+        response.append(OrderResponse(
+            id=order.id,
+            status=order.status,
+            total_amount=order.total_amount,
+            shipping_address=order.shipping_address,
+            payment_method=order.payment_method,
+            created_at=order.created_at,
+            updated_at=order.updated_at,
+            items=order_items
+        ))
+    
+    return response
+
+@admin_router.get('/dashboard/recent', response_model=List[OrderResponse])
+def get_recent_orders_for_dashboard(
+    user: user_dependency,
+    db: db_dependency,
+    days: int = 3,
+    limit: int = 10
+):
+    """Get recent orders for admin dashboard"""
+    check_admin(user)
+    
+    # Calculate date for recent orders
+    recent_date = datetime.utcnow() - timedelta(days=days)
+    
+    # Get recent orders
+    orders = db.query(Order).filter(
+        Order.created_at >= recent_date
+    ).order_by(desc(Order.created_at)).limit(limit).all()
+    
+    # Prepare response
+    response = []
+    for order in orders:
+        order_items = []
+        for item in order.items:
+            product = db.query(Product).filter(Product.id == item.product_id).first()
+            product_name = product.name if product else "Unknown Product"
+            
+            order_items.append(OrderItemResponse(
+                id=item.id,
+                product_id=item.product_id,
+                product_name=product_name,
+                quantity=item.quantity,
+                price_at_time=item.price_at_time,
+                subtotal=item.price_at_time * item.quantity
+            ))
+        
+        response.append(OrderResponse(
+            id=order.id,
+            status=order.status,
+            total_amount=order.total_amount,
+            shipping_address=order.shipping_address,
+            payment_method=order.payment_method,
+            created_at=order.created_at,
+            updated_at=order.updated_at,
+            items=order_items
+        ))
+    
+    return response 
