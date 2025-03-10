@@ -210,6 +210,14 @@ def create_category(user: user_dependency, db: db_dependency, category: Category
 def get_categories(db: db_dependency, skip: int = 0, limit: int = 100):
     return db.query(Category).offset(skip).limit(limit).all()
 
+# Enhanced category endpoints for admin dashboard
+@admin_router.get('/dashboard/categories', response_model=List[CategoryResponse])
+def get_categories_for_dashboard(user: user_dependency, db: db_dependency):
+    """Get all categories for admin dashboard with additional metadata"""
+    check_admin(user)
+    categories = db.query(Category).all()
+    return categories
+
 # Admin Product endpoints
 @admin_router.post('/', response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 def create_product(user: user_dependency, db: db_dependency, product: ProductCreate):

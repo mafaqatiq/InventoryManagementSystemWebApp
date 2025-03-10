@@ -16,6 +16,8 @@ app = FastAPI(
 def home(request: Request):
     return {"message": "Welcome to the E-commerce API"}
 
+ 
+
 # Include routers
 app.include_router(auth.router)
 app.include_router(admin.router)
