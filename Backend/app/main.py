@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from app.database import engine, Base
 from app import models
-from app.router import auth, admin, users, products
+from app.router import auth, admin, users, products, cart, orders
 
 # Create database tables before initializing the app
 models.Base.metadata.create_all(bind=engine)
@@ -15,7 +15,6 @@ app = FastAPI(
 @app.get('/')
 def home(request: Request):
     return {"message": "Welcome to the E-commerce API"}
-
  
 
 # Include routers
@@ -25,3 +24,6 @@ app.include_router(users.router)
 app.include_router(products.router)
 app.include_router(products.admin_router)
 app.include_router(products.stock_router)
+app.include_router(cart.router)
+app.include_router(orders.router)
+app.include_router(orders.admin_router)

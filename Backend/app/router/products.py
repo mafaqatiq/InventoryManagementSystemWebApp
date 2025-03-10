@@ -113,7 +113,7 @@ class ProductBase(BaseModel):
     in_stock: bool = True
 
 class ProductCreate(ProductBase):
-    pass
+    initial_stock: int = 0
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -231,10 +231,32 @@ def create_product(user: user_dependency, db: db_dependency, product: ProductCre
             detail=f"Category with id {product.category_id} not found"
         )
     
-    db_product = Product(**product.dict())
+    # Extract initial_stock and remove it from the product data
+    initial_stock = product.initial_stock
+    product_data = product.dict()
+    del product_data['initial_stock']
+    
+    # Create the product
+    db_product = Product(**product_data)
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
+    
+    # Add initial stock if provided
+    if initial_stock > 0:
+        stock_movement = Stock(
+            product_id=db_product.id,
+            change_type=StockChangeType.RESTOCK,
+            quantity=initial_stock
+        )
+        db.add(stock_movement)
+        db.commit()
+        
+        # Update product in_stock status
+        db_product.in_stock = True
+        db.commit()
+        db.refresh(db_product)
+    
     return db_product
 
 @admin_router.put('/{product_id}', response_model=ProductResponse)
@@ -402,7 +424,27 @@ def update_stock(
     db.refresh(stock_movement)
     return stock_movement
 
-# Product Image endpoints
+# Enhanced Product Image endpoints
+@admin_router.get('/{product_id}/images', response_model=List[ProductImageResponse])
+def get_product_images(
+    user: user_dependency, 
+    db: db_dependency, 
+    product_id: int
+):
+    """Get all images for a specific product"""
+    check_admin(user)
+    
+    # Check if product exists
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product with id {product_id} not found"
+        )
+    
+    images = db.query(ProductImage).filter(ProductImage.product_id == product_id).all()
+    return images
+
 @admin_router.post('/{product_id}/images', response_model=ProductImageResponse)
 def add_product_image(
     user: user_dependency, 
@@ -410,6 +452,7 @@ def add_product_image(
     product_id: int, 
     image: ProductImageCreate
 ):
+    """Add an image to a product"""
     check_admin(user)
     
     # Check if product exists
@@ -434,6 +477,70 @@ def add_product_image(
     db.commit()
     db.refresh(db_image)
     return db_image
+
+@admin_router.delete('/{product_id}/images/{image_id}', status_code=status.HTTP_204_NO_CONTENT)
+def delete_product_image(
+    user: user_dependency,
+    db: db_dependency,
+    product_id: int,
+    image_id: int
+):
+    """Delete a product image"""
+    check_admin(user)
+    
+    # Check if image exists and belongs to the product
+    image = db.query(ProductImage).filter(
+        ProductImage.id == image_id,
+        ProductImage.product_id == product_id
+    ).first()
+    
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image with id {image_id} not found for product {product_id}"
+        )
+    
+    db.delete(image)
+    db.commit()
+    return None
+
+@admin_router.put('/{product_id}/images/{image_id}/set-primary', response_model=ProductImageResponse)
+def set_primary_image(
+    user: user_dependency,
+    db: db_dependency,
+    product_id: int,
+    image_id: int
+):
+    """Set an image as the primary image for a product"""
+    check_admin(user)
+    
+    # Check if image exists and belongs to the product
+    image = db.query(ProductImage).filter(
+        ProductImage.id == image_id,
+        ProductImage.product_id == product_id
+    ).first()
+    
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image with id {image_id} not found for product {product_id}"
+        )
+    
+    # Unset any existing primary images
+    existing_primary = db.query(ProductImage).filter(
+        ProductImage.product_id == product_id,
+        ProductImage.is_primary == True
+    ).all()
+    
+    for img in existing_primary:
+        img.is_primary = False
+    
+    # Set the selected image as primary
+    image.is_primary = True
+    
+    db.commit()
+    db.refresh(image)
+    return image
 
 # Customer Product endpoints
 @router.get('/', response_model=List[ProductResponse])
@@ -592,4 +699,177 @@ def get_product_reviews(
         Review.product_id == product_id
     ).order_by(desc(Review.created_at)).offset(skip).limit(limit).all()
     
-    return reviews 
+    return reviews
+
+# Enhanced admin product endpoints for dashboard
+@admin_router.get('/dashboard/all', response_model=List[ProductResponse])
+def get_all_products_for_dashboard(
+    user: user_dependency,
+    db: db_dependency,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all products without filtering for admin dashboard"""
+    check_admin(user)
+    
+    products = db.query(Product).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    return products
+
+@admin_router.get('/dashboard/by-category/{category_id}', response_model=List[ProductResponse])
+def get_products_by_category(
+    user: user_dependency,
+    db: db_dependency,
+    category_id: int,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get products filtered by category for admin dashboard"""
+    check_admin(user)
+    
+    # Check if category exists
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Category with id {category_id} not found"
+        )
+    
+    products = db.query(Product).filter(
+        Product.category_id == category_id
+    ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    
+    return products
+
+@admin_router.get('/dashboard/in-stock', response_model=List[ProductResponse])
+def get_in_stock_products(
+    user: user_dependency,
+    db: db_dependency,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all in-stock products for admin dashboard"""
+    check_admin(user)
+    
+    products = db.query(Product).filter(
+        Product.in_stock == True
+    ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    
+    return products
+
+@admin_router.get('/dashboard/out-of-stock', response_model=List[ProductResponse])
+def get_out_of_stock_products(
+    user: user_dependency,
+    db: db_dependency,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all out-of-stock products for admin dashboard"""
+    check_admin(user)
+    
+    products = db.query(Product).filter(
+        Product.in_stock == False
+    ).order_by(desc(Product.created_at)).offset(skip).limit(limit).all()
+    
+    return products
+
+@admin_router.get('/dashboard/best-selling', response_model=List[ProductResponse])
+def get_best_selling_products(
+    user: user_dependency,
+    db: db_dependency,
+    skip: int = 0,
+    limit: int = 10
+):
+    """Get best-selling products for admin dashboard"""
+    check_admin(user)
+    
+    products = db.query(Product).order_by(
+        desc(Product.how_much_sold)
+    ).offset(skip).limit(limit).all()
+    
+    return products
+
+@admin_router.get('/dashboard/low-stock', response_model=List[ProductResponse])
+def get_low_stock_products(
+    user: user_dependency,
+    db: db_dependency,
+    threshold: int = 10,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get products with stock below threshold for admin dashboard"""
+    check_admin(user)
+    
+    # This is more complex as we need to calculate stock_left for each product
+    # First, get all products
+    products = db.query(Product).filter(Product.in_stock == True).all()
+    
+    # Filter products with low stock
+    low_stock_products = []
+    for product in products:
+        if product.stock_left <= threshold:
+            low_stock_products.append(product)
+    
+    # Apply pagination manually
+    paginated_products = low_stock_products[skip:skip+limit]
+    
+    return paginated_products
+
+@admin_router.get('/dashboard/summary', status_code=status.HTTP_200_OK)
+def get_products_summary(
+    user: user_dependency,
+    db: db_dependency
+):
+    """Get summary statistics for products"""
+    check_admin(user)
+    
+    # Calculate dates
+    now = datetime.utcnow()
+    one_week_ago = now - timedelta(days=7)
+    one_month_ago = now - timedelta(days=30)
+    
+    # Get counts
+    total_products = db.query(func.count(Product.id)).scalar()
+    
+    in_stock_products = db.query(func.count(Product.id)).filter(
+        Product.in_stock == True
+    ).scalar()
+    
+    out_of_stock_products = db.query(func.count(Product.id)).filter(
+        Product.in_stock == False
+    ).scalar()
+    
+    week_products = db.query(func.count(Product.id)).filter(
+        Product.created_at >= one_week_ago
+    ).scalar()
+    
+    month_products = db.query(func.count(Product.id)).filter(
+        Product.created_at >= one_month_ago
+    ).scalar()
+    
+    # Get category counts
+    category_counts = db.query(
+        Category.name, 
+        func.count(Product.id)
+    ).join(
+        Product, 
+        Product.category_id == Category.id
+    ).group_by(
+        Category.name
+    ).all()
+    
+    category_stats = {name: count for name, count in category_counts}
+    
+    # Get total sales
+    total_sales = db.query(func.sum(Product.how_much_sold)).scalar() or 0
+    
+    return {
+        "products": {
+            "total": total_products,
+            "in_stock": in_stock_products,
+            "out_of_stock": out_of_stock_products,
+            "added_last_week": week_products,
+            "added_last_month": month_products
+        },
+        "categories": category_stats,
+        "total_sales": total_sales
+    } 

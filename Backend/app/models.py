@@ -20,6 +20,8 @@ class Users(Base):
     
     # Relationships
     reviews = relationship("Review", back_populates="user")
+    cart_items = relationship("CartItem", back_populates="user", cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="user", cascade="all, delete-orphan")
 
 
 # Enums for Product attributes
@@ -39,6 +41,19 @@ class StockChangeType(str, enum.Enum):
     RESTOCK = "Restock"
     SALE = "Sale"
     RETURN = "Return"
+
+class OrderStatus(str, enum.Enum):
+    PENDING = "Pending"
+    PROCESSING = "Processing"
+    SHIPPED = "Shipped"
+    DELIVERED = "Delivered"
+    CANCELLED = "Cancelled"
+
+class PaymentMethod(str, enum.Enum):
+    CREDIT_CARD = "Credit Card"
+    DEBIT_CARD = "Debit Card"
+    PAYPAL = "PayPal"
+    CASH_ON_DELIVERY = "Cash on Delivery"
 
 
 class Category(Base):
@@ -72,6 +87,8 @@ class Product(Base):
     images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
     stock_movements = relationship("Stock", back_populates="product", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="product", cascade="all, delete-orphan")
+    cart_items = relationship("CartItem", back_populates="product", cascade="all, delete-orphan")
+    order_items = relationship("OrderItem", back_populates="product", cascade="all, delete-orphan")
     
     @property
     def stock_left(self):
@@ -121,3 +138,45 @@ class Review(Base):
     # Relationships
     product = relationship("Product", back_populates="reviews")
     user = relationship("Users", back_populates="reviews")
+
+
+class CartItem(Base):
+    __tablename__ = "cart_items"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    product_id = Column(Integer, ForeignKey("products.id"))
+    quantity = Column(Integer, default=1)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("Users", back_populates="cart_items")
+    product = relationship("Product", back_populates="cart_items")
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    status = Column(Enum(OrderStatus), default=OrderStatus.PENDING)
+    total_amount = Column(Float)
+    shipping_address = Column(Text)
+    payment_method = Column(Enum(PaymentMethod))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("Users", back_populates="orders")
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"))
+    product_id = Column(Integer, ForeignKey("products.id"))
+    quantity = Column(Integer)
+    price_at_time = Column(Float)  # Store price at time of order
+    
+    # Relationships
+    order = relationship("Order", back_populates="items")
+    product = relationship("Product", back_populates="order_items")
