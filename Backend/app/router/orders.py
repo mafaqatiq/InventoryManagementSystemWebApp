@@ -43,6 +43,59 @@ def check_admin(user):
             detail="Not authorized to perform this action"
         )
 
+def enhance_order_items(order_items, db):
+    """Add product_name and subtotal to order items"""
+    enhanced_items = []
+    
+    for item in order_items:
+        # Get product name
+        product = db.query(Product).filter(Product.id == item.product_id).first()
+        product_name = product.name if product else "Unknown Product"
+        
+        # Calculate subtotal
+        subtotal = item.price_at_time * item.quantity
+        
+        # Create enhanced item
+        enhanced_item = {
+            "id": item.id,
+            "product_id": item.product_id,
+            "product_name": product_name,
+            "quantity": item.quantity,
+            "price_at_time": item.price_at_time,
+            "subtotal": subtotal
+        }
+        
+        enhanced_items.append(enhanced_item)
+    
+    return enhanced_items
+
+def enhance_orders(orders, db):
+    """Enhance orders with properly formatted items"""
+    enhanced_orders = []
+    
+    for order in orders:
+        # Get order items
+        order_items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+        
+        # Enhance items with product_name and subtotal
+        enhanced_items = enhance_order_items(order_items, db)
+        
+        # Create enhanced order
+        enhanced_order = {
+            "id": order.id,
+            "status": order.status,
+            "total_amount": order.total_amount,
+            "shipping_address": order.shipping_address,
+            "payment_method": order.payment_method,
+            "created_at": order.created_at,
+            "updated_at": order.updated_at,
+            "items": enhanced_items
+        }
+        
+        enhanced_orders.append(enhanced_order)
+    
+    return enhanced_orders
+
 #######################
 # Pydantic Models
 #######################
@@ -154,6 +207,9 @@ def create_order(
     
     # Create order items
     for item_data in order_items_data:
+        product_name = item_data.pop("product_name")  # Remove product_name as it's not in the OrderItem model
+        subtotal = item_data.pop("subtotal")  # Remove subtotal as it's not in the OrderItem model
+        
         order_item = OrderItem(
             order_id=new_order.id,
             **item_data
@@ -188,9 +244,10 @@ def create_order(
     
     db.commit()
     
-    # Refresh order to include items
-    db.refresh(new_order)
-    return new_order
+    # Enhance order with properly formatted items
+    enhanced_orders = enhance_orders([new_order], db)
+    
+    return enhanced_orders[0]
 
 @router.get('/', response_model=List[OrderResponse])
 def get_user_orders(
@@ -204,11 +261,10 @@ def get_user_orders(
         Order.user_id == user['id']
     ).order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @router.get('/{order_id}', response_model=OrderResponse)
 def get_order(
@@ -228,10 +284,10 @@ def get_order(
             detail=f"Order with id {order_id} not found"
         )
     
-    # Ensure order items are loaded
-    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance order with properly formatted items
+    enhanced_orders = enhance_orders([order], db)
     
-    return order
+    return enhanced_orders[0]
 
 #######################
 # Admin Order Endpoints
@@ -265,11 +321,10 @@ def get_all_orders(
     # Apply pagination
     orders = query.order_by(desc(Order.created_at)).offset(skip).limit(limit).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @admin_router.get('/recent', response_model=List[OrderResponse])
 def get_recent_orders(
@@ -284,11 +339,10 @@ def get_recent_orders(
         Order.created_at >= one_week_ago
     ).order_by(desc(Order.created_at)).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @admin_router.get('/monthly', response_model=List[OrderResponse])
 def get_monthly_orders(
@@ -303,11 +357,10 @@ def get_monthly_orders(
         Order.created_at >= one_month_ago
     ).order_by(desc(Order.created_at)).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @admin_router.get('/{order_id}', response_model=OrderResponse)
 def admin_get_order(
@@ -326,10 +379,10 @@ def admin_get_order(
             detail=f"Order with id {order_id} not found"
         )
     
-    # Ensure order items are loaded
-    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance order with properly formatted items
+    enhanced_orders = enhance_orders([order], db)
     
-    return order
+    return enhanced_orders[0]
 
 @admin_router.put('/{order_id}/status', response_model=OrderResponse)
 def update_order_status(
@@ -356,10 +409,10 @@ def update_order_status(
     db.commit()
     db.refresh(order)
     
-    # Ensure order items are loaded
-    order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance order with properly formatted items
+    enhanced_orders = enhance_orders([order], db)
     
-    return order
+    return enhanced_orders[0]
 
 #######################
 # Admin Dashboard Endpoints
@@ -455,11 +508,10 @@ def get_all_orders_for_dashboard(
         desc(Order.created_at)
     ).offset(skip).limit(limit).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @admin_router.get('/dashboard/by-status/{status}', response_model=List[OrderResponse])
 def get_orders_by_status_for_dashboard(
@@ -478,11 +530,10 @@ def get_orders_by_status_for_dashboard(
         desc(Order.created_at)
     ).offset(skip).limit(limit).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders
+    return enhanced_orders
 
 @admin_router.get('/dashboard/recent', response_model=List[OrderResponse])
 def get_recent_orders_for_dashboard(
@@ -501,8 +552,7 @@ def get_recent_orders_for_dashboard(
         desc(Order.created_at)
     ).limit(limit).all()
     
-    # Ensure order items are loaded
-    for order in orders:
-        order.items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    # Enhance orders with properly formatted items
+    enhanced_orders = enhance_orders(orders, db)
     
-    return orders 
+    return enhanced_orders 

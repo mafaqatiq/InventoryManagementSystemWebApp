@@ -203,7 +203,8 @@ def apply_pagination(query, skip=0, limit=12):
     return query.offset(skip).limit(limit)
 
 def check_admin(user):
-    if not user or not user.get('is_admin', False):
+    """Verify that the user has admin privileges"""
+    if not user or user.get('user_role') != 'admin':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"
