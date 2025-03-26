@@ -1,30 +1,54 @@
 "use client"
 
 import * as React from "react"
-import { Moon, Sun, Monitor } from "lucide-react"
 import { useTheme } from "next-themes"
-import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { Moon, Sun, Monitor } from "lucide-react"
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme()
+  const [mounted, setMounted] = React.useState(false)
 
-  const cycleTheme = () => {
-    if (theme === "light") setTheme("dark")
-    else if (theme === "dark") setTheme("system")
-    else setTheme("light")
+  React.useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  const handleThemeChange = () => {
+    if (theme === "light") {
+      setTheme("dark")
+    } else if (theme === "dark") {
+      setTheme("system")
+    } else {
+      setTheme("light")
+    }
+  }
+
+  if (!mounted) {
+    return (
+      <Switch 
+        disabled
+        className="opacity-50"
+      />
+    )
+  }
+
+  const getCurrentThemeLabel = () => {
+    switch (theme) {
+      case "light": return <Sun className="h-4 w-4" />
+      case "dark": return <Moon className="h-4 w-4" />
+    }
   }
 
   return (
-    <Button
-      variant="outline"
-      size="icon"
-      onClick={cycleTheme}
-      className="transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
-    >
-      <Sun className="h-[1.2rem] w-[1.2rem] transition-all scale-100 opacity-100 dark:scale-0 dark:opacity-0" />
-      <Moon className="absolute h-[1.2rem] w-[1.2rem] transition-all scale-0 opacity-0 dark:scale-100 dark:opacity-100" />
-      <Monitor className="absolute h-[1.2rem] w-[1.2rem] transition-all scale-0 opacity-0 [.system_&]:scale-100 [.system_&]:opacity-100" />
-      <span className="sr-only">Toggle theme</span>
-    </Button>
+    <div className="flex items-center gap-2">
+      <div className="text-muted-foreground">
+        {getCurrentThemeLabel()}
+      </div>
+      <Switch
+        checked={theme === "dark"}
+        onCheckedChange={handleThemeChange}
+        aria-label="Toggle theme"
+      />
+    </div>
   )
 }
