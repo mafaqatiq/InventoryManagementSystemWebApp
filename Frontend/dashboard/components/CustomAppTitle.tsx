@@ -5,7 +5,7 @@ import Image from "next/image";
 const CustomAppTitle = () => (
   <Box sx={{ display: "flex", alignItems: "center", gap: 1,marginLeft: 4 }}>
     <Image src="/logo.png" alt="My Logo" width={30} height={30} />
-    <Typography variant="h6" sx={{ color: "white", fontWeight: "bold" }}>
+    <Typography variant="h6" sx={{  fontWeight: "bold" }}>
       My Dashboard
     </Typography>
   </Box>
