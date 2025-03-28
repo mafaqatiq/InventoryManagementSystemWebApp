@@ -1,7 +1,4 @@
 'use client';
-
-import { motion } from 'framer-motion';
-
 // pages/dashboard.tsx (Static Mock)
 export default function Dashboard() {
   // Mock data
